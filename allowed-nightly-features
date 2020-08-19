@@ -1,0 +1,63 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: Apache-2.0
+
+import os
+import sys
+import toml
+import re
+
+# Given a file, this function yields all enabled features in that file.
+def yield_features(file):
+    file = file.replace('\n', '')
+    matches = re.findall(r'#!\[feature\((.+?)\)\]', file)
+    for block in matches:
+        for feature in block.split(","):
+            yield feature.strip()
+
+# Given a root crate directory, this function finds all Cargo entrypoints in it
+# and all subcrates.
+def yield_paths(root_dir):
+    crate_dirs = {root for root, dirs, files in os.walk(root_dir) if 'Cargo.toml' in files}
+    for dir in crate_dirs:
+        cargo = toml.load(os.path.join(dir, 'Cargo.toml'))
+
+        for bin in cargo.get("bin", [{}]):
+            if cargo["package"].get("autobins", int(cargo["package"]["edition"]) >= 2018):
+                yield os.path.join(dir, bin.get("path", "src/main.rs"))
+            else:
+                p = bin.get("path")
+                if p is not None:
+                    yield os.path.join(dir, p)
+
+        for lib in cargo.get("lib", [{}]):
+            yield os.path.join(dir, lib.get("path", "src/lib.rs"))
+
+# Get the input allowed features.
+allowed_features = sys.argv[1]
+allowed_features = {f.strip() for f in allowed_features.split(',')}
+
+# Get the calling workflow's workspace.
+workspace = os.environ.get("GITHUB_WORKSPACE", None)
+# Grab all paths to check.
+paths_to_check = yield_paths(workspace)
+
+# Check each file for unallowed features.
+failure = 0
+for path in paths_to_check:
+    try:
+        f = open(path, 'r')
+    except:
+        continue
+    with f:
+        file = f.read()
+
+    unallowed_features = set(yield_features(file)) - allowed_features
+    if len(unallowed_features) > 0:
+        short_path = path[len(workspace):]
+        print(f"{short_path} enables unallowed nightly features:")
+        for feature in unallowed_features:
+            print(feature)
+        failure = 1
+
+# Exit with a failure if we encountered unallowed features.
+exit(failure)
